@@ -9,6 +9,8 @@ pub struct SimpleGlazing {
     pub solar_absorptance: f64,
     pub inward_fraction: f64,
     pub reflectance: f64,
+    /// Glazing resistance with the standard film coefficients removed, m²K/W.
+    pub resistance: f64,
 }
 
 impl SimpleGlazing {
@@ -25,6 +27,7 @@ pub fn simple_glazing(u_factor: f64, shgc: f64) -> SimpleGlazing {
             solar_absorptance: 0.0,
             inward_fraction: 0.0,
             reflectance: 1.0,
+            resistance: 1.0,
         };
     }
     let riw = if u_factor < 5.85 {
@@ -56,7 +59,36 @@ pub fn simple_glazing(u_factor: f64, shgc: f64) -> SimpleGlazing {
         solar_absorptance,
         inward_fraction,
         reflectance,
+        resistance: rlw,
     }
+}
+
+/// Inside and outside face temperatures of a single simple-glazing layer.
+///
+/// Absorbed solar is split equally between the two faces, matching
+/// `CalcWindowHeatBalance`. `q_to_inside` is extra heat gain on the room face,
+/// W/m², positive into the glass.
+pub fn window_face_temperatures(
+    resistance: f64,
+    h_outside: f64,
+    t_outside: f64,
+    q_absorbed_outside: f64,
+    h_inside: f64,
+    t_zone: f64,
+    q_to_inside: f64,
+) -> (f64, f64) {
+    let g = 1.0 / resistance.max(0.001);
+    let h_out = h_outside.max(0.0);
+    let h_in = h_inside.max(0.0);
+    let rhs_out = h_out * t_outside + q_absorbed_outside;
+    let rhs_in = h_in * t_zone + q_to_inside;
+    let det = (h_out + g) * (g + h_in) - g * g;
+    if det.abs() < 1.0e-12 {
+        return (t_outside, t_zone);
+    }
+    let t_so = (rhs_out * (g + h_in) + g * rhs_in) / det;
+    let t_si = ((h_out + g) * rhs_in + g * rhs_out) / det;
+    (t_so, t_si)
 }
 
 fn solar_transmittance(u_factor: f64, shgc: f64) -> f64 {
@@ -163,6 +195,26 @@ mod tests {
             let rebuilt = glass.transmittance + glass.inward_absorptance();
             assert!((rebuilt - shgc).abs() < 1.0e-8, "SHGC {rebuilt} vs {shgc}");
         }
+    }
+
+    #[test]
+    fn rating_films_recover_the_u_factor() {
+        let u = 2.2;
+        let glass = simple_glazing(u, 0.4);
+        let h_in = if u < 5.85 {
+            0.359073 * u.ln() + 6.949915
+        } else {
+            1.788041 * u - 2.886625
+        };
+        let h_out = 0.025342 * u + 29.163853;
+        let (t_so, t_si) =
+            window_face_temperatures(glass.resistance, h_out, 0.0, 0.0, h_in, 20.0, 0.0);
+        let flux = h_in * (t_si - 20.0);
+        let expected = u * (0.0 - 20.0);
+        assert!(
+            (flux - expected).abs() < 1.0e-6,
+            "flux {flux} expected {expected}, faces {t_so} {t_si}"
+        );
     }
 
     #[test]
