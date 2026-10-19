@@ -72,12 +72,12 @@ fn run() -> Result<(), String> {
         }
         "help" | "--help" | "-h" => {
             println!(
-                "bem — Rust port of the EnergyPlus engine\n\n\
-                 usage:\n  \
-                 bem run <file.idf|file.epJSON> <file.epw> [--out results.csv] [--warmup-days 7]\n\n\
-                 This is not EnergyPlus. Ideal loads, convective electric baseboard,\n\
-                 zone heat balance, psychrometrics, and a finite-difference wall are\n\
-                 implemented. Input may be IDF or epJSON. Other HVAC systems are rejected."
+                "bem reads an EnergyPlus IDF or epJSON file and an EPW weather file,\n\
+                 then writes zone heating and cooling results.\n\n\
+                 bem run <model.idf|model.epJSON> <weather.epw> [--out results.csv] [--warmup-days 7]\n\
+                 bem help\n\n\
+                 This is an independent port, not an official EnergyPlus release.\n\
+                 See README.md for the objects this version can run."
             );
             Ok(())
         }
