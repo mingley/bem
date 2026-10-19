@@ -289,7 +289,13 @@ fn step_zone_timestep(
                 continue;
             }
             let t_zone = zones[surface.zone].temperature;
-            let (t_air, solar, use_sky) = boundary_driver(surface, zones, wx, sun);
+            let (t_air, solar, use_sky) = boundary_driver(
+                surface,
+                zones,
+                wx,
+                sun,
+                beam_sunlit_fraction(model, si, sun),
+            );
             let t_so = surfaces[si].t_out;
             let t_si = surfaces[si].t_in;
             let h_ext = exterior_film(surface, t_so, t_air, wx);
@@ -922,20 +928,39 @@ fn radiant_share(model: &Model, surface: &Surface, end_minute: u32, wx: &Weather
     }
 }
 
+fn beam_sunlit_fraction(model: &Model, surface_index: usize, sun: &SunVector) -> f64 {
+    let surface = &model.surfaces[surface_index];
+    let mut fraction = 1.0_f64;
+    for overhang in model
+        .overhangs
+        .iter()
+        .filter(|item| item.window == surface_index)
+    {
+        fraction = fraction.min(crate::shading::beam_sunlit_fraction(
+            &surface.vertices,
+            surface.normal,
+            &overhang.vertices,
+            [sun.x, sun.y, sun.z],
+        ));
+    }
+    fraction
+}
+
 fn boundary_driver(
     surface: &Surface,
     zones: &[ZoneRuntime],
     wx: &WeatherHour,
     sun: &SunVector,
+    sunlit: f64,
 ) -> (f64, f64, bool) {
     match surface.boundary {
         Boundary::Adiabatic => (zones[surface.zone].temperature, 0.0, false),
         Boundary::Ground => (18.0, 0.0, false),
         Boundary::Zone(other) => (zones[other].temperature, 0.0, false),
         Boundary::Outdoors => {
-            let incident =
-                incident_solar(sun, surface.normal, wx.direct_normal, wx.diffuse_horizontal);
-            (wx.dry_bulb, incident, true)
+            let (beam, diffuse) =
+                incident_parts(sun, surface.normal, wx.direct_normal, wx.diffuse_horizontal);
+            (wx.dry_bulb, sunlit * beam + diffuse, true)
         }
     }
 }
@@ -984,8 +1009,9 @@ fn interior_solar(model: &Model, sun: &SunVector, wx: &WeatherHour) -> (Vec<f64>
             if !matches!(surface.boundary, Boundary::Outdoors) {
                 continue;
             }
-            let (beam, diffuse) =
+            let (mut beam, diffuse) =
                 incident_parts(sun, surface.normal, wx.direct_normal, wx.diffuse_horizontal);
+            beam *= beam_sunlit_fraction(model, si, sun);
             let cos_inc = if sun.up {
                 (surface.normal[0] * sun.x + surface.normal[1] * sun.y + surface.normal[2] * sun.z)
                     .max(0.0)
@@ -1037,11 +1063,6 @@ fn incident_parts(sun: &SunVector, normal: [f64; 3], dni: f64, dhi: f64) -> (f64
         (0.0, 0.0)
     };
     (beam, dhi * f_sky + (horizontal + dhi) * ALBEDO * f_ground)
-}
-
-fn incident_solar(sun: &SunVector, normal: [f64; 3], dni: f64, dhi: f64) -> f64 {
-    let (beam, diffuse) = incident_parts(sun, normal, dni, dhi);
-    beam + diffuse
 }
 
 fn sky_temp(horizontal_ir: f64, dry_bulb: f64) -> f64 {
@@ -1361,6 +1382,7 @@ DATA PERIODS,1,1,Data,Friday,1/1,1/2
                 infiltration_m3_s: vec![],
             }],
             surfaces: vec![],
+            overhangs: vec![],
             outputs: vec![],
             warnings: vec![],
         }
@@ -1513,6 +1535,7 @@ DATA PERIODS,1,1,Data,Friday,1/1,1/2
             thermal_absorptance_ext: 0.0,
             thermal_absorptance_int: 0.9,
             active: true,
+            vertices: vec![],
         });
         model.run_period.as_mut().unwrap().end_day = 2;
         let weather = constant_weather(0.0, 48);
