@@ -72,7 +72,7 @@ fn run() -> Result<(), String> {
         }
         "help" | "--help" | "-h" => {
             println!(
-                "bem \u2014 Rust port of the EnergyPlus engine\n\n\
+                "bem — Rust port of the EnergyPlus engine\n\n\
                  usage:\n  \
                  bem run <file.idf|file.epJSON> <file.epw> [--out results.csv] [--warmup-days 7]\n\n\
                  This is not EnergyPlus. Ideal loads, convective electric baseboard,\n\
@@ -83,4 +83,69 @@ fn run() -> Result<(), String> {
         }
         other => Err(format!("unknown command '{other}'. Try `bem help`.")),
     }
+}
+
+fn hourly_csv(simulation: &bem::simulate::Simulation) -> String {
+    if simulation.steps.is_empty() {
+        return String::new();
+    }
+    let zone_names: Vec<&str> = simulation.steps[0]
+        .zones
+        .iter()
+        .map(|z| z.name.as_str())
+        .collect();
+    let mut header = "Date,Hour,Outdoor Drybulb (C)".to_string();
+    for name in &zone_names {
+        header.push_str(&format!(
+            ",{name} Temperature (C),{name} Humidity Ratio (kg/kg),{name} Heating (W),{name} Cooling (W)"
+        ));
+    }
+    header.push('\n');
+    let mut body = header;
+    let mut index = 0;
+    while index < simulation.steps.len() {
+        let step = &simulation.steps[index];
+        let mut count = 0.0;
+        let mut outdoor = 0.0;
+        let mut temp = vec![0.0; zone_names.len()];
+        let mut hum = vec![0.0; zone_names.len()];
+        let mut heat = vec![0.0; zone_names.len()];
+        let mut cool = vec![0.0; zone_names.len()];
+        while index < simulation.steps.len()
+            && simulation.steps[index].year == step.year
+            && simulation.steps[index].month == step.month
+            && simulation.steps[index].day == step.day
+            && simulation.steps[index].hour == step.hour
+        {
+            let row = &simulation.steps[index];
+            outdoor += row.outdoor_db;
+            for (zi, zone) in row.zones.iter().enumerate() {
+                temp[zi] += zone.temperature;
+                hum[zi] += zone.humidity_ratio;
+                heat[zi] += zone.heating_w;
+                cool[zi] += zone.cooling_w;
+            }
+            count += 1.0;
+            index += 1;
+        }
+        body.push_str(&format!(
+            "{:04}-{:02}-{:02},{},{:.4}",
+            step.year,
+            step.month,
+            step.day,
+            step.hour,
+            outdoor / count
+        ));
+        for zi in 0..zone_names.len() {
+            body.push_str(&format!(
+                ",{:.4},{:.6},{:.2},{:.2}",
+                temp[zi] / count,
+                hum[zi] / count,
+                heat[zi] / count,
+                cool[zi] / count
+            ));
+        }
+        body.push('\n');
+    }
+    body
 }
