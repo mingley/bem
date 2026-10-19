@@ -454,6 +454,19 @@ fn spec_for(object_type: &str) -> Option<&'static Spec> {
         extensions: &[],
         extension_fields: &[],
     };
+    const OVERHANG: Spec = Spec {
+        named: true,
+        fields: &[
+            "window_or_door_name",
+            "height_above_window_or_door",
+            "tilt_angle_from_window_door",
+            "left_extension_from_window_door_width",
+            "right_extension_from_window_door_width",
+            "depth",
+        ],
+        extensions: &[],
+        extension_fields: &[],
+    };
     const OUTPUT: Spec = Spec {
         named: false,
         fields: &[
@@ -509,6 +522,7 @@ fn spec_for(object_type: &str) -> Option<&'static Spec> {
         "RunPeriod" => &RUN_PERIOD,
         "Timestep" => &TIMESTEP,
         "GlobalGeometryRules" => &GEOMETRY,
+        "Shading:Overhang" => &OVERHANG,
         "Output:Variable" => &OUTPUT,
         "Version" => &VERSION,
         "SimulationControl" => &SIMCONTROL,
