@@ -131,14 +131,14 @@ These pieces follow the EnergyPlus equations:
 - Inside convection with the TARP model
 - Outside convection with the DOE-2 model
 - Long-wave exchange among opaque surfaces and the inside face of simple glazing, with Hottel’s Script F method
-- The simple-glazing window model. The glazing resistance is what remains after the standard films are removed, and the glass face temperatures are solved with the simulation's films. Transmitted beam is absorbed by the floor; the rest of the transmitted solar is spread by area and inside absorptance. The inside glass face joins the long-wave enclosure
+- The simple-glazing window model. Beam solar uses the angular transmittance and reflectance curves. The glazing resistance is what remains after the standard films are removed, and the glass face temperatures are solved with the simulation's films. Transmitted beam is absorbed by the floor; the rest of the transmitted solar is spread by area and inside absorptance. The inside glass face joins the long-wave enclosure
 - The third-order zone air temperature and humidity updates
 - Opaque-wall conduction transfer functions from the state-space method, in one dimension and without an internal heat source
 - Design-flow infiltration, `Idesign * schedule * (A + B*|Tzone - Toutdoor| + C*wind + D*wind²)`, with outdoor, indoor, or standard density. Wind speed is taken from the weather file
 
 These pieces are simpler stand-ins, so annual results will move as the port grows:
 
-- Solar is isotropic beam plus diffuse, with a ground reflectance of 0.2. There is no exterior shading. Window angular optics and shades are still ahead.
+- Solar is isotropic beam plus diffuse, with a ground reflectance of 0.2. There is no exterior shading. Window shades are still ahead.
 
 ## Tests
 
