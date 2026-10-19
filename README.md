@@ -99,6 +99,7 @@ The timestamp is the end of the interval. Hour 24 is written `24:00:00`. Rates a
 | Gains | `People`, `Lights`, `ElectricEquipment`, `GasEquipment`, `OtherEquipment`, `ZoneInfiltration:DesignFlowRate` |
 | Controls | `ZoneControl:Thermostat`, `ThermostatSetpoint:DualSetpoint` |
 | HVAC | `ZoneHVAC:IdealLoadsAirSystem`, `ZoneHVAC:Baseboard:Convective:Electric`, `ZoneHVAC:EquipmentList`, `ZoneHVAC:EquipmentConnections` |
+| Shading | `Shading:Overhang` |
 | Reports | `Output:Variable` |
 
 An equipment type outside that HVAC list stops the run with an error. Other unrecognized objects are skipped and named in a warning.
@@ -138,7 +139,7 @@ These pieces follow the EnergyPlus equations:
 
 These pieces are simpler stand-ins, so annual results will move as the port grows:
 
-- Solar is isotropic beam plus diffuse, with a ground reflectance of 0.2. There is no exterior shading. Window shades are still ahead.
+- `Shading:Overhang` casts a beam shadow on the window or door it references. Diffuse solar and other shade types are still ahead. Solar is isotropic beam plus diffuse, with a ground reflectance of 0.2. Window shades are still ahead.
 
 ## Tests
 
