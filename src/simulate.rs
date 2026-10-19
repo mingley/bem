@@ -29,7 +29,9 @@ use crate::psychrometrics::{
     psy_cp_air_fn_w, psy_hg_air_fn_w_tdb, psy_rho_air_fn_pb_tdb_w, psy_w_fn_tdb_rh_pb, PsychState,
 };
 use crate::radiosity::{class_from_tilt, net_longwave, tilt_from_normal, EnclosureSurface};
-use crate::simple_glazing::{absorb_transmitted, window_face_temperatures, SolarReceiver};
+use crate::simple_glazing::{
+    absorb_transmitted, simple_glazing_beam, window_face_temperatures, SolarReceiver,
+};
 use crate::solar::{daily_solar_coeffs, day_of_year, sun4, SunVector};
 use crate::{KELVIN, SIGMA};
 
@@ -969,8 +971,11 @@ fn interior_solar(model: &Model, sun: &SunVector, wx: &WeatherHour) -> (Vec<f64>
                 continue;
             }
             let SurfaceKind::Window {
+                u_factor,
+                shgc,
                 transmittance,
                 solar_absorptance,
+                reflectance,
                 ..
             } = surface.kind
             else {
@@ -981,9 +986,18 @@ fn interior_solar(model: &Model, sun: &SunVector, wx: &WeatherHour) -> (Vec<f64>
             }
             let (beam, diffuse) =
                 incident_parts(sun, surface.normal, wx.direct_normal, wx.diffuse_horizontal);
-            beam_w += transmittance * beam * surface.area;
+            let cos_inc = if sun.up {
+                (surface.normal[0] * sun.x + surface.normal[1] * sun.y + surface.normal[2] * sun.z)
+                    .max(0.0)
+            } else {
+                0.0
+            };
+            let (beam_transmittance, _, beam_absorptance) =
+                simple_glazing_beam(u_factor, shgc, transmittance, reflectance, cos_inc);
+            beam_w += beam_transmittance * beam * surface.area;
             diffuse_w += transmittance * diffuse * surface.area;
-            surface_watts[si] += solar_absorptance * (beam + diffuse) * surface.area;
+            surface_watts[si] +=
+                (beam_absorptance * beam + solar_absorptance * diffuse) * surface.area;
         }
         let mut receivers = Vec::new();
         let mut index = Vec::new();
