@@ -30,7 +30,7 @@ cargo run --release -- run examples/box.epJSON examples/weather.epw --out result
 That command prints a short summary on stderr. With the default seven warmup days, the example currently reports:
 
 ```text
-heating 83.468 kWh
+heating 85.933 kWh
 cooling 0.000 kWh
 timesteps 432
 ```
@@ -134,11 +134,11 @@ These pieces follow the EnergyPlus equations:
 - The simple-glazing window model. Transmitted beam is absorbed by the floor; the rest of the transmitted solar is spread by area and inside absorptance
 - The third-order zone air temperature and humidity updates
 - Opaque-wall conduction transfer functions from the state-space method, in one dimension and without an internal heat source
+- Design-flow infiltration, `Idesign * schedule * (A + B*|Tzone - Toutdoor| + C*wind + D*wind²)`, with outdoor, indoor, or standard density. Wind speed is taken from the weather file
 
 These pieces are simpler stand-ins, so annual results will move as the port grows:
 
 - Solar is isotropic beam plus diffuse, with a ground reflectance of 0.2. There is no exterior shading.
-- Infiltration uses the design flow only. The wind and temperature coefficients are still ahead.
 - Windows are a single U-factor. They do not yet join the long-wave enclosure.
 
 ## Tests
