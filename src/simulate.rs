@@ -11,15 +11,16 @@
 //! Ideal-loads capacity is the sensible load that holds the thermostat setpoint,
 //! which is `tempDepLoad * Tset - tempIndLoad` in that same file. Convective
 //! electric baseboard meets the remaining heating-setpoint load in heating
-//! sequence order before or after that ideal-loads unit. Opaque
-//! conduction is a fully implicit finite-difference wall (the CondFD family),
-//! not the default conduction-transfer-function generator. Interior convection
+//! sequence order before or after that ideal-loads unit. Opaque conduction
+//! uses the state-space conduction transfer functions from
+//! `Construction::calculateTransferFunction`. Interior convection
 //! is TARP. Exterior convection is the DOE-2 model. Opaque surfaces exchange
 //! long-wave radiation through Hottel's Script F coefficients. Zone humidity
 //! uses the same third-order corrector as EnergyPlus.
 
 use crate::baseboard::convective_electric;
 use crate::convection::{doe2_exterior_hc, tarp_interior_hc};
+use crate::ctf::{conduction_transfer_functions, Ctf, CtfLayer};
 use crate::epw::{WeatherFile, WeatherHour};
 use crate::model::{Boundary, Gain, Model, Surface, SurfaceKind, ZoneEquipment};
 use crate::psychrometrics::{
@@ -87,10 +88,18 @@ struct ZoneRuntime {
 }
 
 struct SurfaceRuntime {
-    nodes: Vec<f64>,
-    caps: Vec<f64>,
-    conductance: Vec<f64>,
+    ctf: Option<Ctf>,
+    t_out: f64,
+    t_in: f64,
+    t_out_hist: Vec<f64>,
+    t_in_hist: Vec<f64>,
+    q_out_hist: Vec<f64>,
+    q_in_hist: Vec<f64>,
+    /// Zone timesteps remaining before the next CTF history update.
+    steps_until_update: usize,
 }
+
+const SURFACE_DAMP: f64 = 5.0;
 
 pub fn simulate(
     model: &Model,
@@ -127,11 +136,12 @@ pub fn simulate(
             }
         })
         .collect();
-    let mut surfaces: Vec<SurfaceRuntime> = model
-        .surfaces
-        .iter()
-        .map(|surface| build_surface(surface))
-        .collect();
+    let timestep_hours = 1.0 / model.timesteps_per_hour as f64;
+    let mut surfaces = Vec::new();
+    for surface in &model.surfaces {
+        let t0 = zones[surface.zone].temperature;
+        surfaces.push(build_surface(surface, timestep_hours, t0)?);
+    }
     let mut psych = PsychState::default();
 
     for _ in 0..options.warmup_days {
@@ -248,9 +258,12 @@ fn step_zone_timestep(
     let w_out = psy_w_fn_tdb_rh_pb(wx.dry_bulb, rh.clamp(0.0, 1.0), pressure);
     let sky = sky_temp(wx.horizontal_ir, wx.dry_bulb);
     let (surface_solar, zone_solar) = interior_solar(model, sun, wx);
-    let snapshot: Vec<Vec<f64>> = surfaces.iter().map(|s| s.nodes.clone()).collect();
     let humidity0: Vec<f64> = zones.iter().map(|z| z.humidity).collect();
-    let mut interior = vec![20.0; surfaces.len()];
+    let update_conduction: Vec<bool> = surfaces
+        .iter()
+        .map(|surface| surface.ctf.is_some() && surface.steps_until_update == 0)
+        .collect();
+    let mut interior: Vec<f64> = surfaces.iter().map(|surface| surface.t_in).collect();
     let mut h_interior = vec![0.1; surfaces.len()];
     let mut loads: Vec<Delivered> = model
         .zones
@@ -263,9 +276,6 @@ fn step_zone_timestep(
         .collect();
 
     for _ in 0..3 {
-        for (i, nodes) in snapshot.iter().enumerate() {
-            surfaces[i].nodes.clone_from(nodes);
-        }
         for (zi, w) in humidity0.iter().enumerate() {
             zones[zi].humidity = *w;
         }
@@ -276,26 +286,27 @@ fn step_zone_timestep(
             }
             let t_zone = zones[surface.zone].temperature;
             let (t_air, solar, use_sky) = boundary_driver(surface, zones, wx, sun);
-            let t_so = surfaces[si].nodes.first().copied().unwrap_or(t_zone);
-            let t_si = surfaces[si].nodes.last().copied().unwrap_or(t_zone);
+            let t_so = surfaces[si].t_out;
+            let t_si = surfaces[si].t_in;
             let h_ext = exterior_film(surface, t_so, t_air, wx);
             h_interior[si] = tarp_interior_hc(t_si, t_zone, surface.normal[2]);
             let q_rad = radiant_share(model, surface, end_minute, wx);
             let q_lw = longwave_flux[si] * surface.area;
-            if let Some(t_int) = commit_conduction(
-                surface,
-                &mut surfaces[si],
-                dt,
-                t_air,
-                sky,
-                h_ext,
-                h_interior[si],
-                solar,
-                use_sky,
-                t_zone,
-                q_rad + q_lw + surface_solar[si],
-            ) {
-                interior[si] = t_int;
+            if update_conduction[si] {
+                if let Some(t_int) = commit_conduction(
+                    surface,
+                    &mut surfaces[si],
+                    t_air,
+                    sky,
+                    h_ext,
+                    h_interior[si],
+                    solar,
+                    use_sky,
+                    t_zone,
+                    q_rad + q_lw + surface_solar[si],
+                ) {
+                    interior[si] = t_int;
+                }
             }
         }
         for (zi, zone) in model.zones.iter().enumerate() {
@@ -322,6 +333,21 @@ fn step_zone_timestep(
             };
             zones[zi].temperature = update.temperature;
             zones[zi].humidity = update.humidity;
+        }
+    }
+
+    for (runtime, update) in surfaces.iter_mut().zip(&update_conduction) {
+        if *update {
+            shift_conduction_history(runtime);
+            let interval = runtime
+                .ctf
+                .as_ref()
+                .map(|ctf| ctf.zone_steps_per_update)
+                .unwrap_or(1);
+            runtime.steps_until_update = interval;
+        }
+        if runtime.ctf.is_some() && runtime.steps_until_update > 0 {
+            runtime.steps_until_update -= 1;
         }
     }
 
@@ -926,52 +952,50 @@ fn enclosure_longwave(model: &Model, interior: &[f64]) -> Vec<f64> {
     flux
 }
 
-fn build_surface(surface: &Surface) -> SurfaceRuntime {
+fn build_surface(
+    surface: &Surface,
+    timestep_hours: f64,
+    t0: f64,
+) -> Result<SurfaceRuntime, String> {
     let SurfaceKind::Opaque { layers } = &surface.kind else {
-        return SurfaceRuntime {
-            nodes: Vec::new(),
-            caps: Vec::new(),
-            conductance: Vec::new(),
-        };
+        return Ok(SurfaceRuntime {
+            ctf: None,
+            t_out: t0,
+            t_in: t0,
+            t_out_hist: Vec::new(),
+            t_in_hist: Vec::new(),
+            q_out_hist: Vec::new(),
+            q_in_hist: Vec::new(),
+            steps_until_update: 0,
+        });
     };
-    let area = surface.area;
-    let mut caps = vec![0.0];
-    let mut conductance = Vec::new();
-    let mut prev_k = 0.0;
-    let mut prev_dx = 0.0;
-    let mut have_prev = false;
-    for layer in layers {
-        for i in 0..layer.n {
-            if !have_prev {
-                conductance.push(layer.k * area / (layer.dx / 2.0));
-            } else if i == 0 {
-                let g = area / (prev_dx / (2.0 * prev_k) + layer.dx / (2.0 * layer.k));
-                conductance.push(g);
-            } else {
-                conductance.push(layer.k * area / layer.dx);
-            }
-            caps.push(layer.rho * layer.cp * layer.dx * area);
-            prev_k = layer.k;
-            prev_dx = layer.dx;
-            have_prev = true;
-        }
-    }
-    if have_prev {
-        conductance.push(prev_k * area / (prev_dx / 2.0));
-        caps.push(0.0);
-    }
-    let nodes = vec![20.0; caps.len()];
-    SurfaceRuntime {
-        nodes,
-        caps,
-        conductance,
-    }
+    let ctf_layers: Vec<CtfLayer> = layers
+        .iter()
+        .map(|layer| CtfLayer {
+            thickness: layer.dx,
+            conductivity: layer.k,
+            density: layer.rho,
+            specific_heat: layer.cp,
+        })
+        .collect();
+    let ctf = conduction_transfer_functions(&ctf_layers, timestep_hours)
+        .map_err(|err| format!("surface '{}': {err}", surface.name))?;
+    let n = ctf.num_terms + 1;
+    Ok(SurfaceRuntime {
+        ctf: Some(ctf),
+        t_out: t0,
+        t_in: t0,
+        t_out_hist: vec![t0; n],
+        t_in_hist: vec![t0; n],
+        q_out_hist: vec![0.0; n],
+        q_in_hist: vec![0.0; n],
+        steps_until_update: 0,
+    })
 }
 
 fn commit_conduction(
     surface: &Surface,
     runtime: &mut SurfaceRuntime,
-    dt: f64,
     t_db: f64,
     sky: f64,
     h_conv_ext: f64,
@@ -981,77 +1005,86 @@ fn commit_conduction(
     t_zone: f64,
     q_to_inside: f64,
 ) -> Option<f64> {
-    if !matches!(surface.kind, SurfaceKind::Opaque { .. }) {
+    let ctf = runtime.ctf.as_ref()?;
+    if surface.area <= 0.0 {
         return None;
     }
-    let n = runtime.caps.len();
-    if n < 2 {
-        return None;
+    let (const_out, const_in) = history_conduction(ctf, runtime);
+    let q_inside = q_to_inside / surface.area;
+    let h_int = h_int.max(0.0);
+    let mut h_film = h_conv_ext.max(0.0);
+    let mut env = h_film * t_db;
+    if use_sky {
+        env += surface.solar_absorptance * incident;
+        if surface.thermal_absorptance_ext > 0.0 && h_conv_ext > 0.0 {
+            let tsk = sky + KELVIN;
+            let tso = runtime.t_out + KELVIN;
+            let h_rad =
+                surface.thermal_absorptance_ext * SIGMA * (tsk * tsk + tso * tso) * (tsk + tso);
+            h_film += h_rad;
+            env += h_rad * sky;
+        }
     }
-    let told = runtime.nodes.clone();
-    let mut h_ext = h_conv_ext.max(0.0);
-    let mut numerator = h_ext * t_db + surface.solar_absorptance * incident;
-    if use_sky && surface.thermal_absorptance_ext > 0.0 && h_conv_ext > 0.0 {
-        let tsk = sky + KELVIN;
-        let tso = told[0] + KELVIN;
-        let h_rad = surface.thermal_absorptance_ext * SIGMA * (tsk * tsk + tso * tso) * (tsk + tso);
-        h_ext += h_rad;
-        numerator += h_rad * sky;
-    }
-    let t_env = if h_ext > 1.0e-8 {
-        numerator / h_ext
+    let y0 = ctf.cross[0];
+    let x0 = ctf.outside[0];
+    let z0 = ctf.inside[0];
+    let t_old = runtime.t_in;
+    let (t_out, t_in) = if matches!(surface.boundary, Boundary::Adiabatic) {
+        let denom = z0 - y0 + h_int + SURFACE_DAMP;
+        let t_in = (const_in + q_inside + h_int * t_zone + SURFACE_DAMP * t_old) / denom;
+        (t_in, t_in)
+    } else if y0 > 0.01 {
+        // Quick conduction folds the inside balance into the outside face.
+        let f1 = y0 / (z0 + h_int);
+        let inside_drive = const_in + q_inside + h_int * t_zone;
+        let denom = x0 + h_film - f1 * y0;
+        let t_out = (-const_out + env + f1 * inside_drive) / denom;
+        let t_in = (inside_drive + SURFACE_DAMP * t_old + y0 * t_out) / (z0 + h_int + SURFACE_DAMP);
+        (t_out, t_in)
     } else {
-        t_db
+        let t_out = (-const_out + env + y0 * runtime.t_in) / (x0 + h_film);
+        let t_in = (const_in + q_inside + h_int * t_zone + SURFACE_DAMP * t_old + y0 * t_out)
+            / (z0 + h_int + SURFACE_DAMP);
+        (t_out, t_in)
     };
-    let g_ext = h_ext * surface.area;
-    let g_int = h_int * surface.area;
-    let mut lower = vec![0.0; n];
-    let mut diag = vec![0.0; n];
-    let mut upper = vec![0.0; n];
-    let mut rhs = vec![0.0; n];
-    for i in 0..n {
-        let cap_dt = runtime.caps[i] / dt;
-        diag[i] = cap_dt;
-        rhs[i] = cap_dt * told[i];
-        if i > 0 {
-            let g = runtime.conductance[i - 1];
-            diag[i] += g;
-            lower[i] = -g;
-        }
-        if i + 1 < n {
-            let g = runtime.conductance[i];
-            diag[i] += g;
-            upper[i] = -g;
-        }
-    }
-    diag[0] += g_ext;
-    rhs[0] += g_ext * t_env;
-    diag[n - 1] += g_int;
-    rhs[n - 1] += g_int * t_zone + q_to_inside;
-    if diag.iter().any(|d| d.abs() < 1.0e-12) {
-        return None;
-    }
-    runtime.nodes = thomas(&lower, &diag, &upper, &rhs);
-    Some(*runtime.nodes.last().unwrap())
+    runtime.t_out = t_out;
+    runtime.t_in = t_in;
+    Some(t_in)
 }
 
-fn thomas(lower: &[f64], diag: &[f64], upper: &[f64], rhs: &[f64]) -> Vec<f64> {
-    let n = diag.len();
-    let mut c_prime = vec![0.0; n];
-    let mut d_prime = vec![0.0; n];
-    c_prime[0] = upper[0] / diag[0];
-    d_prime[0] = rhs[0] / diag[0];
-    for i in 1..n {
-        let denom = diag[i] - lower[i] * c_prime[i - 1];
-        c_prime[i] = if i + 1 < n { upper[i] / denom } else { 0.0 };
-        d_prime[i] = (rhs[i] - lower[i] * d_prime[i - 1]) / denom;
+fn history_conduction(ctf: &Ctf, runtime: &SurfaceRuntime) -> (f64, f64) {
+    let mut outside = 0.0;
+    let mut inside = 0.0;
+    for term in 1..=ctf.num_terms {
+        outside += ctf.outside[term] * runtime.t_out_hist[term]
+            - ctf.cross[term] * runtime.t_in_hist[term]
+            + ctf.flux[term] * runtime.q_out_hist[term];
+        inside += ctf.cross[term] * runtime.t_out_hist[term]
+            - ctf.inside[term] * runtime.t_in_hist[term]
+            + ctf.flux[term] * runtime.q_in_hist[term];
     }
-    let mut x = vec![0.0; n];
-    x[n - 1] = d_prime[n - 1];
-    for i in (0..n - 1).rev() {
-        x[i] = d_prime[i] - c_prime[i] * x[i + 1];
+    (outside, inside)
+}
+
+fn shift_conduction_history(runtime: &mut SurfaceRuntime) {
+    let Some(ctf) = runtime.ctf.clone() else {
+        return;
+    };
+    let (const_out, const_in) = history_conduction(&ctf, runtime);
+    let q_in = runtime.t_out * ctf.cross[0] - runtime.t_in * ctf.inside[0] + const_in;
+    let q_out = runtime.t_out * ctf.outside[0] - runtime.t_in * ctf.cross[0] + const_out;
+    for term in (1..runtime.t_in_hist.len()).rev() {
+        runtime.t_out_hist[term] = runtime.t_out_hist[term - 1];
+        runtime.t_in_hist[term] = runtime.t_in_hist[term - 1];
+        runtime.q_out_hist[term] = runtime.q_out_hist[term - 1];
+        runtime.q_in_hist[term] = runtime.q_in_hist[term - 1];
     }
-    x
+    if !runtime.t_in_hist.is_empty() {
+        runtime.t_out_hist[0] = runtime.t_out;
+        runtime.t_in_hist[0] = runtime.t_in;
+        runtime.q_out_hist[0] = q_out;
+        runtime.q_in_hist[0] = q_in;
+    }
 }
 
 fn resolve_period(
