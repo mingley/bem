@@ -22,7 +22,9 @@ use crate::baseboard::convective_electric;
 use crate::convection::{doe2_exterior_hc, tarp_interior_hc};
 use crate::ctf::{conduction_transfer_functions, Ctf, CtfLayer};
 use crate::epw::{WeatherFile, WeatherHour};
-use crate::model::{Boundary, Gain, Model, Surface, SurfaceKind, ZoneEquipment};
+use crate::model::{
+    infiltration_modifier, Boundary, Gain, InfilDensity, Model, Surface, SurfaceKind, ZoneEquipment,
+};
 use crate::psychrometrics::{
     psy_cp_air_fn_w, psy_hg_air_fn_w_tdb, psy_rho_air_fn_pb_tdb_w, psy_w_fn_tdb_rh_pb, PsychState,
 };
@@ -376,6 +378,46 @@ fn step_zone_timestep(
         .collect()
 }
 
+fn infiltration_volume(
+    model: &Model,
+    inf: &crate::model::Infiltration,
+    year: i32,
+    month: u32,
+    day: u32,
+    minutes: u32,
+    t_zone: f64,
+    wx: &WeatherHour,
+) -> f64 {
+    let fraction = inf
+        .schedule
+        .map(|index| model.schedules[index].value(year, month, day, minutes))
+        .unwrap_or(1.0);
+    if fraction <= 0.0 {
+        return 0.0;
+    }
+    let modifier = infiltration_modifier(inf, t_zone, wx.dry_bulb, wx.wind_speed);
+    (inf.flow_m3_s * fraction * modifier).max(0.0)
+}
+
+fn infiltration_density(
+    basis: InfilDensity,
+    pressure: f64,
+    t_zone: f64,
+    w_zone: f64,
+    t_outdoor: f64,
+    w_outdoor: f64,
+    elevation: f64,
+) -> f64 {
+    match basis {
+        InfilDensity::Outdoor => psy_rho_air_fn_pb_tdb_w(pressure, t_outdoor, w_outdoor),
+        InfilDensity::Indoor => psy_rho_air_fn_pb_tdb_w(pressure, t_zone, w_zone),
+        InfilDensity::Standard => {
+            let standard_pressure = 101325.0 * (1.0 - 2.25577e-5 * elevation).powf(5.2559);
+            psy_rho_air_fn_pb_tdb_w(standard_pressure, 20.0, 0.0)
+        }
+    }
+}
+
 fn zone_balance(
     model: &Model,
     zone: &crate::model::Zone,
@@ -437,14 +479,35 @@ fn zone_balance(
     let mut sum_ha_tsurf = 0.0;
     let mut sum_mcp = 0.0;
     let mut sum_mcp_t = 0.0;
+    let elevation = model
+        .location
+        .as_ref()
+        .map(|loc| loc.elevation)
+        .unwrap_or(0.0);
+    let cp_out = psy_cp_air_fn_w(w_out);
     for inf in &zone.infiltration_m3_s {
-        let frac = inf
-            .schedule
-            .map(|i| model.schedules[i].value(year, month, day, minutes))
-            .unwrap_or(1.0);
-        let m = rho * inf.flow_m3_s * frac;
-        sum_mcp += m * cp;
-        sum_mcp_t += m * cp * wx.dry_bulb;
+        let volume = infiltration_volume(
+            model,
+            inf,
+            year,
+            month,
+            day,
+            minutes,
+            runtime.temperature,
+            wx,
+        );
+        let rho_inf = infiltration_density(
+            inf.density,
+            pressure,
+            runtime.temperature,
+            runtime.humidity,
+            wx.dry_bulb,
+            w_out,
+            elevation,
+        );
+        let m = rho_inf * volume;
+        sum_mcp += m * cp_out;
+        sum_mcp_t += m * cp_out * wx.dry_bulb;
     }
     for (si, surface) in surfaces.iter().enumerate() {
         if surface.zone != zi || !surface.active {
@@ -489,15 +552,33 @@ fn zone_balance(
     // Latent watts are converted with the vapor enthalpy PsyHgAirFnWTdb, matching EnergyPlus.
     let hg = psy_hg_air_fn_w_tdb(runtime.humidity, t_new).max(1.0e5);
     let m_lat = latent_w / hg;
+    let rho_moist = psy_rho_air_fn_pb_tdb_w(pressure, t_new, runtime.humidity);
     let mut m_inf = 0.0;
     for inf in &zone.infiltration_m3_s {
-        let frac = inf
-            .schedule
-            .map(|i| model.schedules[i].value(year, month, day, minutes))
-            .unwrap_or(1.0);
-        m_inf += rho * inf.flow_m3_s * frac;
+        let volume = infiltration_volume(
+            model,
+            inf,
+            year,
+            month,
+            day,
+            minutes,
+            runtime.temperature,
+            wx,
+        );
+        let rho_inf = match inf.density {
+            InfilDensity::Indoor => rho_moist,
+            other => infiltration_density(
+                other,
+                pressure,
+                t_new,
+                runtime.humidity,
+                wx.dry_bulb,
+                w_out,
+                elevation,
+            ),
+        };
+        m_inf += rho_inf * volume;
     }
-    let rho_moist = psy_rho_air_fn_pb_tdb_w(pressure, t_new, runtime.humidity);
     let c_moist = (rho_moist * zone.volume / dt).max(1.0e-8);
     let a_flow = m_inf;
     let b_moist = m_lat + m_inf * w_out;
@@ -1251,6 +1332,31 @@ DATA PERIODS,1,1,Data,Friday,1/1,1/2
     }
 
     #[test]
+    fn infiltration_temperature_term_scales_the_outdoor_air_load() {
+        let mut model = bare_model(0.0, 20.0, 30.0);
+        model.zones[0].infiltration_m3_s = vec![Infiltration {
+            schedule: None,
+            flow_m3_s: 0.05,
+            constant: 0.0,
+            temperature: 0.05,
+            velocity: 0.0,
+            velocity_squared: 0.0,
+            density: InfilDensity::Outdoor,
+        }];
+        let weather = constant_weather(0.0, 24);
+        let sim = simulate(&model, &weather, &SimOptions { warmup_days: 0 }).unwrap();
+        let heat = sim.steps.last().unwrap().zones[0].heating_w;
+        // At 20 C the modifier is 0.05 * |0 - 20| = 1, so the design flow is unchanged.
+        let rho = crate::psychrometrics::psy_rho_air_fn_pb_tdb_w(101325.0, 0.0, 0.0);
+        let cp = crate::psychrometrics::psy_cp_air_fn_w(0.0);
+        let expected = rho * 0.05 * cp * 20.0;
+        assert!(
+            (heat - expected).abs() / expected < 0.05,
+            "heating {heat} expected about {expected}"
+        );
+    }
+
+    #[test]
     fn baseboard_takes_its_sequence_share_and_ideal_loads_the_rest() {
         let mut model = bare_model(-2000.0, 20.0, 24.0);
         model.zones[0].equipment = vec![
@@ -1385,6 +1491,11 @@ DATA PERIODS,1,1,Data,Friday,1/1,1/2
         model.zones[0].infiltration_m3_s = vec![Infiltration {
             schedule: None,
             flow_m3_s: flow,
+            constant: 1.0,
+            temperature: 0.0,
+            velocity: 0.0,
+            velocity_squared: 0.0,
+            density: InfilDensity::Indoor,
         }];
         model.zones[0].gains = vec![Gain::Power {
             schedule: 0,
