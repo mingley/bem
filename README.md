@@ -139,7 +139,9 @@ These pieces follow the EnergyPlus equations:
 
 These pieces are simpler stand-ins, so annual results will move as the port grows:
 
-- `Shading:Overhang` casts a beam shadow on the window or door it references. Diffuse solar and other shade types are still ahead. Solar is isotropic beam plus diffuse, with a ground reflectance of 0.2. Window shades are still ahead.
+- `Shading:Overhang` shades the window or door it references. Beam solar uses the sunlit area of that surface.
+- Isotropic sky diffuse uses the same shadow on each patch of a 6 by 24 sky dome. The horizon-band ratio is stored for a later anisotropic sky. Ground-reflected diffuse is not shaded.
+- Fins, detached shades, and window shades are still ahead. Solar is isotropic beam plus diffuse, with a ground reflectance of 0.2.
 
 ## Tests
 
@@ -147,7 +149,7 @@ These pieces are simpler stand-ins, so annual results will move as the port grow
 cargo test
 ```
 
-The tests check psychrometrics, sun position, convection coefficients, long-wave balance, glazing, schedules, ideal loads, the electric baseboard, and that the example IDF and epJSON produce the same heating and cooling.
+The tests check psychrometrics, sun position, convection coefficients, long-wave balance, glazing, overhang beam and sky-diffuse shadows, schedules, ideal loads, the electric baseboard, and that the example IDF and epJSON produce the same heating and cooling.
 
 ## Layout
 
@@ -165,6 +167,7 @@ The tests check psychrometrics, sun position, convection coefficients, long-wave
 | `src/convection.rs` | TARP and DOE-2 surface films |
 | `src/radiosity.rs` | Script F long-wave exchange |
 | `src/simple_glazing.rs` | Simple window solar split |
+| `src/shading.rs` | Overhang geometry, beam shadows, and sky-diffuse ratios |
 | `src/baseboard.rs` | Convective electric baseboard |
 | `src/report.rs` | `Output:Variable` CSV |
 | `examples/` | One-zone model and three-day weather |

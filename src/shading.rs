@@ -1,10 +1,11 @@
-//! Beam shadow of a `Shading:Overhang` on the window it references.
+//! Shadows from a `Shading:Overhang` on the window it references.
 //!
 //! The overhang is a rectangle built in the window's local axes, matching the
 //! EnergyPlus dimensions: height above the window, tilt from the window, left
-//! and right extensions, and depth. The sunlit fraction is the window area that
-//! the overhang's shadow does not cover. Incoming rays travel opposite the sun
-//! direction.
+//! and right extensions, and depth. Beam sunlit fraction is the window area the
+//! overhang's shadow does not cover. Diffuse ratios follow `SkyDifSolarShading`:
+//! the sky dome is split into equal-radiance patches, and each patch is shaded
+//! with the same projection. Incoming rays travel opposite the sun direction.
 
 /// One overhang attached to a window or door.
 #[derive(Clone, Debug)]
@@ -89,6 +90,82 @@ pub fn beam_sunlit_fraction(
     let overlap = clip_polygon(&shade_2d, &window_2d);
     let shaded = polygon_area_2d(&overlap).abs();
     (1.0 - (shaded / window_area).clamp(0.0, 1.0)).clamp(0.0, 1.0)
+}
+
+/// Shaded sky diffuse divided by the unshaded value.
+///
+/// `isotropic` multiplies sky diffuse. `horizon` is the same ratio for the
+/// lowest altitude ring, kept for a later anisotropic sky.
+#[derive(Clone, Copy, Debug)]
+pub struct DiffuseShadeRatio {
+    pub isotropic: f64,
+    pub horizon: f64,
+}
+
+/// Isotropic and horizon-band shade ratios for every overhang on one surface.
+///
+/// Patch altitudes are 7.5° through 82.5° and azimuths are 0° through 345°,
+/// the `NPhi = 6`, `NTheta = 24` grid in `SolarShading.cc`. A patch behind the
+/// surface is left out of both sums. With no overhang the ratios are 1.
+pub fn diffuse_shade_ratios(
+    window: &[[f64; 3]],
+    normal: [f64; 3],
+    shades: &[&[[f64; 3]]],
+) -> DiffuseShadeRatio {
+    if window.len() < 3 || shades.is_empty() {
+        return DiffuseShadeRatio {
+            isotropic: 1.0,
+            horizon: 1.0,
+        };
+    }
+    const N_PHI: usize = 6;
+    const N_THETA: usize = 24;
+    const EPS: f64 = 1.0e-10;
+    let d_phi = std::f64::consts::FRAC_PI_2 / N_PHI as f64;
+    let d_theta = std::f64::consts::TAU / N_THETA as f64;
+    let weight = d_theta * d_phi;
+    let phi_min = 0.5 * d_phi;
+    let mut with_iso = 0.0;
+    let mut wo_iso = 0.0;
+    let mut with_horiz = 0.0;
+    let mut wo_horiz = 0.0;
+    for i_phi in 0..N_PHI {
+        let phi = phi_min + i_phi as f64 * d_phi;
+        let (sin_phi, cos_phi) = phi.sin_cos();
+        for i_theta in 0..N_THETA {
+            let theta = i_theta as f64 * d_theta;
+            let (sin_theta, cos_theta) = theta.sin_cos();
+            let sun = [cos_phi * cos_theta, cos_phi * sin_theta, sin_phi];
+            let cos_inc = dot(normal, sun);
+            if cos_inc < 0.0 {
+                continue;
+            }
+            let fac = cos_phi * weight * cos_inc;
+            let mut fraction = 1.0_f64;
+            for shade in shades {
+                fraction = fraction.min(beam_sunlit_fraction(window, normal, shade, sun));
+            }
+            let shaded = fac * fraction;
+            with_iso += shaded;
+            wo_iso += fac;
+            if i_phi == 0 {
+                with_horiz += shaded;
+                wo_horiz += fac;
+            }
+        }
+    }
+    DiffuseShadeRatio {
+        isotropic: shade_ratio(with_iso, wo_iso, EPS),
+        horizon: shade_ratio(with_horiz, wo_horiz, EPS),
+    }
+}
+
+fn shade_ratio(with_shade: f64, without_shade: f64, eps: f64) -> f64 {
+    if without_shade.abs() > eps {
+        with_shade / without_shade
+    } else {
+        with_shade / (without_shade + eps)
+    }
 }
 
 fn project_to_plane(
@@ -273,5 +350,41 @@ mod tests {
         let shade = overhang_rectangle(&window, normal, 0.0, 90.0, 0.0, 0.0, 1.0);
         let fraction = beam_sunlit_fraction(&window, normal, &shade, [0.0, 1.0, 0.5]);
         assert!((fraction - 1.0).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn a_window_with_no_overhang_keeps_the_full_sky() {
+        let window = [
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 0.0, 2.0],
+            [0.0, 0.0, 2.0],
+        ];
+        let ratio = diffuse_shade_ratios(&window, [0.0, -1.0, 0.0], &[]);
+        assert!((ratio.isotropic - 1.0).abs() < 1.0e-12);
+        assert!((ratio.horizon - 1.0).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn a_horizontal_overhang_reduces_isotropic_sky_diffuse() {
+        let window = [
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 0.0, 2.0],
+            [0.0, 0.0, 2.0],
+        ];
+        let normal = [0.0, -1.0, 0.0];
+        let shade = overhang_rectangle(&window, normal, 0.0, 90.0, 0.0, 0.0, 1.0);
+        let ratio = diffuse_shade_ratios(&window, normal, &[&shade]);
+        assert!(
+            (ratio.isotropic - 0.706).abs() < 0.02,
+            "isotropic {}",
+            ratio.isotropic
+        );
+        assert!(
+            (ratio.horizon - 0.933).abs() < 0.02,
+            "horizon {}",
+            ratio.horizon
+        );
     }
 }
