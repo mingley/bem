@@ -209,7 +209,10 @@ pub enum SurfaceKind {
     Window {
         u_factor: f64,
         transmittance: f64,
-        inward_absorptance: f64,
+        /// Layer solar absorptance. Half is applied to each glass face.
+        solar_absorptance: f64,
+        /// Glazing resistance after the standard films are removed, m²K/W.
+        resistance: f64,
     },
 }
 
@@ -927,12 +930,13 @@ fn construction_kind(
             SurfaceKind::Window {
                 u_factor,
                 transmittance: optics.transmittance,
-                inward_absorptance: optics.inward_absorptance(),
+                solar_absorptance: optics.solar_absorptance,
+                resistance: optics.resistance,
             },
             0.0,
-            0.84,
-            0.84,
             0.0,
+            0.84,
+            0.84,
             Roughness::VerySmooth,
         ));
     }
