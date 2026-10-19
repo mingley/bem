@@ -91,6 +91,280 @@ pub fn window_face_temperatures(
     (t_so, t_si)
 }
 
+/// Beam solar properties at incidence cosine `cos_inc`, from the simple-glazing
+/// angular curves in `WindowManager::TransAndReflAtPhi`.
+///
+/// `cos_inc` is 1 at normal incidence. The returned transmittance and reflectance
+/// are normalized to the normal-incidence values. Diffuse solar keeps those
+/// normal values.
+pub fn simple_glazing_beam(
+    u_factor: f64,
+    shgc: f64,
+    normal_transmittance: f64,
+    normal_reflectance: f64,
+    cos_inc: f64,
+) -> (f64, f64, f64) {
+    let cs = cos_inc.clamp(0.0, 1.0);
+    let (mut trans_factor, mut reflect_factor) = angular_curve_factors(u_factor, shgc, cs);
+    if cs == 1.0 {
+        trans_factor = 1.0;
+        reflect_factor = 0.0;
+    }
+    let transmittance = (normal_transmittance * trans_factor).clamp(0.0, 1.0);
+    let reflectance = (normal_reflectance * (1.0 - reflect_factor) + reflect_factor)
+        .clamp(0.0, (0.9999 - transmittance).max(0.0));
+    let absorptance = (1.0 - transmittance - reflectance).max(0.0);
+    (transmittance, reflectance, absorptance)
+}
+
+#[allow(unused_assignments)]
+fn angular_curve_factors(u: f64, shgc: f64, cs: f64) -> (f64, f64) {
+    let cs2 = cs * cs;
+    let cs3 = cs2 * cs;
+    let cs4 = cs2 * cs2;
+    let trans = |b: f64, c: f64, d: f64, e: f64| b * cs + c * cs2 + d * cs3 + e * cs4;
+    let trans_a = trans(3.36, -3.85, 1.49, 0.01);
+    let trans_b = trans(2.83, -2.42, 0.04, 0.55);
+    let trans_c = trans(2.45, -1.58, -0.64, 0.77);
+    let trans_d = trans(2.85, -2.58, 0.40, 0.35);
+    let trans_e = trans(1.51, 2.49, -5.87, 2.88);
+    let trans_f = trans(1.21, 3.14, -6.37, 3.03);
+    let trans_g = trans(1.09, 3.54, -6.84, 3.23);
+    let trans_h = trans(0.98, 3.83, -7.13, 3.33);
+    let trans_i = trans(0.79, 3.93, -6.86, 3.15);
+    let trans_j = trans(0.08, 6.02, -8.84, 3.74);
+    let trans_fghi = (trans_f + trans_g + trans_h + trans_i) / 4.0;
+    let trans_fh = (trans_f + trans_h) / 2.0;
+    let trans_bdcd = (trans_b + trans_d + trans_c + trans_d) / 4.0;
+    let reflect = |b: f64, c: f64, d: f64, e: f64, curve: f64| {
+        1.0 + b * cs + c * cs2 + d * cs3 + e * cs4 - curve
+    };
+    let reflect_a = reflect(-0.70, 2.57, -3.20, 1.33, trans_a);
+    let reflect_b = reflect(-1.87, 6.50, -7.86, 3.23, trans_b);
+    let reflect_c = reflect(-2.52, 8.40, -9.86, 3.99, trans_c);
+    let reflect_d = reflect(-1.85, 6.40, -7.64, 3.11, trans_d);
+    let reflect_e = reflect(-1.57, 5.60, -6.82, 2.80, trans_e);
+    let reflect_f = reflect(-3.15, 10.98, -13.14, 5.32, trans_f);
+    let reflect_g = reflect(-3.25, 11.32, -13.54, 5.49, trans_g);
+    let reflect_h = reflect(-3.39, 11.70, -13.94, 5.64, trans_h);
+    let reflect_i = reflect(-4.06, 13.55, -15.74, 6.27, trans_i);
+    let reflect_j = reflect(-4.35, 14.27, -16.32, 6.39, trans_j);
+    let reflect_fghi = (reflect_f + reflect_g + reflect_h + reflect_i) / 4.0;
+    let reflect_fh = (reflect_f + reflect_h) / 2.0;
+    let reflect_bdcd = (reflect_b + reflect_d + reflect_c + reflect_d) / 4.0;
+
+    let mut trans_tmp = 0.0;
+    let mut reflect_tmp = 0.0;
+    if u < 1.4195 {
+        if shgc > 0.45 {
+            trans_tmp = trans_e;
+            reflect_tmp = reflect_e;
+        } else if (0.35..0.45).contains(&shgc) || shgc == 0.45 {
+            trans_tmp = lerp(shgc, 0.35, 0.45, trans_j, trans_e);
+            reflect_tmp = lerp(shgc, 0.35, 0.45, reflect_j, reflect_e);
+        } else {
+            trans_tmp = trans_j;
+            reflect_tmp = reflect_j;
+        }
+    } else if (1.4195..=1.7034).contains(&u) {
+        if shgc > 0.55 {
+            trans_tmp = trans_e;
+            reflect_tmp = reflect_e;
+        } else if shgc > 0.5 && shgc <= 0.55 {
+            trans_tmp = bilerp(
+                u, shgc, 1.4195, 1.7034, 0.50, 0.55, trans_e, trans_e, trans_fghi, trans_e,
+            );
+            reflect_tmp = bilerp(
+                u,
+                shgc,
+                1.4195,
+                1.7034,
+                0.50,
+                0.55,
+                reflect_e,
+                reflect_e,
+                reflect_fghi,
+                reflect_e,
+            );
+        } else if shgc > 0.45 && shgc <= 0.5 {
+            trans_tmp = lerp(u, 1.4195, 1.7034, trans_e, trans_fghi);
+            reflect_tmp = lerp(u, 1.4195, 1.7034, reflect_e, reflect_fghi);
+        } else if shgc > 0.35 && shgc <= 0.45 {
+            trans_tmp = bilerp(
+                u, shgc, 1.4195, 1.7034, 0.35, 0.45, trans_j, trans_e, trans_fghi, trans_fghi,
+            );
+            reflect_tmp = bilerp(
+                u,
+                shgc,
+                1.4195,
+                1.7034,
+                0.35,
+                0.45,
+                reflect_j,
+                reflect_e,
+                reflect_fghi,
+                reflect_fghi,
+            );
+        } else if shgc > 0.3 && shgc <= 0.35 {
+            trans_tmp = lerp(u, 1.4195, 1.7034, trans_j, trans_fghi);
+            reflect_tmp = lerp(u, 1.4195, 1.7034, reflect_j, reflect_fghi);
+        } else if shgc > 0.25 && shgc <= 0.3 {
+            trans_tmp = bilerp(
+                u, shgc, 1.4195, 1.7034, 0.25, 0.3, trans_j, trans_j, trans_fh, trans_fghi,
+            );
+            reflect_tmp = bilerp(
+                u,
+                shgc,
+                1.4195,
+                1.7034,
+                0.25,
+                0.3,
+                reflect_j,
+                reflect_j,
+                reflect_fh,
+                reflect_fghi,
+            );
+        } else {
+            trans_tmp = lerp(u, 1.4195, 1.7034, trans_j, trans_fh);
+            reflect_tmp = lerp(u, 1.4195, 1.7034, reflect_j, reflect_fh);
+        }
+    } else if u > 1.7034 && u < 3.4068 {
+        if shgc > 0.55 {
+            trans_tmp = trans_e;
+            reflect_tmp = reflect_e;
+        } else if (0.5..=0.55).contains(&shgc) {
+            trans_tmp = lerp(shgc, 0.5, 0.55, trans_fghi, trans_e);
+            reflect_tmp = lerp(shgc, 0.5, 0.55, reflect_fghi, reflect_e);
+        } else if shgc > 0.3 && shgc < 0.5 {
+            trans_tmp = trans_fghi;
+            reflect_tmp = reflect_fghi;
+        } else if (0.25..=0.3).contains(&shgc) {
+            trans_tmp = lerp(shgc, 0.25, 0.30, trans_fh, trans_fghi);
+            reflect_tmp = lerp(shgc, 0.25, 0.30, reflect_fh, reflect_fghi);
+        } else {
+            trans_tmp = trans_fh;
+            reflect_tmp = reflect_fh;
+        }
+    } else if (3.4068..=4.5424).contains(&u) {
+        if shgc > 0.65 {
+            trans_tmp = lerp(u, 3.4068, 4.5424, trans_e, trans_a);
+            reflect_tmp = lerp(u, 3.4068, 4.5424, reflect_e, reflect_a);
+        } else if shgc > 0.6 && shgc <= 0.65 {
+            trans_tmp = bilerp(
+                u, shgc, 3.4068, 4.5424, 0.6, 0.65, trans_e, trans_e, trans_bdcd, trans_a,
+            );
+            reflect_tmp = bilerp(
+                u,
+                shgc,
+                3.4068,
+                4.5424,
+                0.6,
+                0.65,
+                reflect_e,
+                reflect_e,
+                reflect_bdcd,
+                reflect_a,
+            );
+        } else if shgc > 0.55 && shgc <= 0.6 {
+            trans_tmp = lerp(u, 3.4068, 4.5424, trans_e, trans_bdcd);
+            reflect_tmp = lerp(u, 3.4068, 4.5424, reflect_e, reflect_bdcd);
+        } else if shgc > 0.5 && shgc <= 0.55 {
+            trans_tmp = bilerp(
+                u, shgc, 3.4068, 4.5424, 0.5, 0.55, trans_fghi, trans_e, trans_bdcd, trans_bdcd,
+            );
+            reflect_tmp = bilerp(
+                u,
+                shgc,
+                3.4068,
+                4.5424,
+                0.5,
+                0.55,
+                reflect_fghi,
+                reflect_e,
+                reflect_bdcd,
+                reflect_bdcd,
+            );
+        } else if shgc > 0.45 && shgc <= 0.5 {
+            trans_tmp = lerp(u, 3.4068, 4.5424, trans_fghi, trans_bdcd);
+            reflect_tmp = lerp(u, 3.4068, 4.5424, reflect_fghi, reflect_bdcd);
+        } else if shgc > 0.3 && shgc <= 0.45 {
+            trans_tmp = bilerp(
+                u, shgc, 3.4068, 4.5424, 0.3, 0.45, trans_fghi, trans_fghi, trans_d, trans_bdcd,
+            );
+            reflect_tmp = bilerp(
+                u,
+                shgc,
+                3.4068,
+                4.5424,
+                0.3,
+                0.45,
+                reflect_fghi,
+                reflect_fghi,
+                reflect_d,
+                reflect_bdcd,
+            );
+        } else if shgc > 0.25 && shgc <= 0.3 {
+            trans_tmp = bilerp(
+                u, shgc, 3.4068, 4.5424, 0.25, 0.3, trans_fh, trans_fghi, trans_d, trans_d,
+            );
+            reflect_tmp = bilerp(
+                u,
+                shgc,
+                3.4068,
+                4.5424,
+                0.25,
+                0.3,
+                reflect_fh,
+                reflect_fghi,
+                reflect_d,
+                reflect_d,
+            );
+        } else {
+            trans_tmp = lerp(u, 3.4068, 4.5424, trans_fh, trans_d);
+            reflect_tmp = lerp(u, 3.4068, 4.5424, reflect_fh, reflect_d);
+        }
+    } else if shgc > 0.65 {
+        trans_tmp = trans_a;
+        reflect_tmp = reflect_a;
+    } else if (0.6..=0.65).contains(&shgc) {
+        trans_tmp = lerp(shgc, 0.6, 0.65, trans_bdcd, trans_a);
+        reflect_tmp = lerp(shgc, 0.6, 0.65, reflect_bdcd, reflect_a);
+    } else if shgc > 0.45 && shgc < 0.6 {
+        trans_tmp = trans_bdcd;
+        reflect_tmp = reflect_bdcd;
+    } else if (0.3..=0.45).contains(&shgc) {
+        trans_tmp = lerp(shgc, 0.3, 0.45, trans_d, trans_bdcd);
+        reflect_tmp = lerp(shgc, 0.3, 0.45, reflect_d, reflect_bdcd);
+    } else {
+        trans_tmp = trans_d;
+        reflect_tmp = reflect_d;
+    }
+    (trans_tmp, reflect_tmp)
+}
+
+fn lerp(x: f64, x0: f64, x1: f64, f0: f64, f1: f64) -> f64 {
+    f0 + ((x - x0) / (x1 - x0)) * (f1 - f0)
+}
+
+fn bilerp(
+    x: f64,
+    y: f64,
+    x1: f64,
+    x2: f64,
+    y1: f64,
+    y2: f64,
+    fx1y1: f64,
+    fx1y2: f64,
+    fx2y1: f64,
+    fx2y2: f64,
+) -> f64 {
+    let denom = (x2 - x1) * (y2 - y1);
+    fx1y1 / denom * (x2 - x) * (y2 - y)
+        + fx2y1 / denom * (x - x1) * (y2 - y)
+        + fx1y2 / denom * (x2 - x) * (y - y1)
+        + fx2y2 / denom * (x - x1) * (y - y1)
+}
+
 fn solar_transmittance(u_factor: f64, shgc: f64) -> f64 {
     let high = || {
         if shgc < 0.7206 {
@@ -215,6 +489,25 @@ mod tests {
             (flux - expected).abs() < 1.0e-6,
             "flux {flux} expected {expected}, faces {t_so} {t_si}"
         );
+    }
+
+    #[test]
+    fn normal_incidence_keeps_the_block_model_transmittance() {
+        let glass = simple_glazing(2.2, 0.4);
+        let (transmittance, reflectance, absorptance) =
+            simple_glazing_beam(2.2, 0.4, glass.transmittance, glass.reflectance, 1.0);
+        assert!((transmittance - glass.transmittance).abs() < 1.0e-12);
+        assert!((reflectance - glass.reflectance).abs() < 1.0e-12);
+        assert!((absorptance - glass.solar_absorptance).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn oblique_beam_transmits_less_than_normal_incidence() {
+        let glass = simple_glazing(2.2, 0.4);
+        let (transmittance, _, _) =
+            simple_glazing_beam(2.2, 0.4, glass.transmittance, glass.reflectance, 0.5);
+        assert!(transmittance < glass.transmittance);
+        assert!(transmittance > 0.0);
     }
 
     #[test]
