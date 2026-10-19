@@ -29,7 +29,7 @@ use crate::psychrometrics::{
     psy_cp_air_fn_w, psy_hg_air_fn_w_tdb, psy_rho_air_fn_pb_tdb_w, psy_w_fn_tdb_rh_pb, PsychState,
 };
 use crate::radiosity::{class_from_tilt, net_longwave, tilt_from_normal, EnclosureSurface};
-use crate::simple_glazing::{absorb_transmitted, SolarReceiver};
+use crate::simple_glazing::{absorb_transmitted, window_face_temperatures, SolarReceiver};
 use crate::solar::{daily_solar_coeffs, day_of_year, sun4, SunVector};
 use crate::{KELVIN, SIGMA};
 
@@ -294,6 +294,47 @@ fn step_zone_timestep(
             h_interior[si] = tarp_interior_hc(t_si, t_zone, surface.normal[2]);
             let q_rad = radiant_share(model, surface, end_minute, wx);
             let q_lw = longwave_flux[si] * surface.area;
+            if let SurfaceKind::Window { resistance, .. } = surface.kind {
+                if matches!(surface.boundary, Boundary::Outdoors) {
+                    let mut h_film = h_ext;
+                    let mut t_bound = t_air;
+                    if use_sky && surface.thermal_absorptance_ext > 0.0 {
+                        let tsk = sky + KELVIN;
+                        let tso = t_so + KELVIN;
+                        let h_rad = surface.thermal_absorptance_ext
+                            * SIGMA
+                            * (tsk * tsk + tso * tso)
+                            * (tsk + tso);
+                        let drive = h_ext * t_air + h_rad * sky;
+                        h_film = h_ext + h_rad;
+                        if h_film > 1.0e-8 {
+                            t_bound = drive / h_film;
+                        }
+                    }
+                    let absorbed = if surface.area > 0.0 {
+                        surface_solar[si] / surface.area
+                    } else {
+                        0.0
+                    };
+                    let q_inside = if surface.area > 0.0 {
+                        (q_rad + q_lw) / surface.area
+                    } else {
+                        0.0
+                    };
+                    let (t_out, t_in) = window_face_temperatures(
+                        resistance,
+                        h_film,
+                        t_bound,
+                        0.5 * absorbed,
+                        h_interior[si],
+                        t_zone,
+                        0.5 * absorbed + q_inside,
+                    );
+                    surfaces[si].t_out = t_out;
+                    surfaces[si].t_in = t_in;
+                    interior[si] = t_in;
+                }
+            }
             if update_conduction[si] {
                 if let Some(t_int) = commit_conduction(
                     surface,
@@ -519,15 +560,11 @@ fn zone_balance(
                 sum_ha += h_in * surface.area;
                 sum_ha_tsurf += h_in * surface.area * interior[si];
             }
-            SurfaceKind::Window {
-                u_factor,
-                inward_absorptance,
-                ..
-            } => {
+            SurfaceKind::Window { .. } => {
                 if matches!(surface.boundary, Boundary::Outdoors) {
-                    sum_ha += u_factor * surface.area;
-                    sum_ha_tsurf += u_factor * surface.area * wx.dry_bulb;
-                    let _ = inward_absorptance;
+                    let h_in = h_interior[si];
+                    sum_ha += h_in * surface.area;
+                    sum_ha_tsurf += h_in * surface.area * interior[si];
                 }
             }
         }
@@ -839,7 +876,7 @@ fn heating_slots(
 }
 
 fn radiant_share(model: &Model, surface: &Surface, end_minute: u32, wx: &WeatherHour) -> f64 {
-    if !matches!(surface.kind, SurfaceKind::Opaque { .. }) || !surface.active {
+    if !surface.active {
         return 0.0;
     }
     let zone = &model.zones[surface.zone];
@@ -873,9 +910,7 @@ fn radiant_share(model: &Model, surface: &Surface, end_minute: u32, wx: &Weather
     let weight: f64 = model
         .surfaces
         .iter()
-        .filter(|s| {
-            s.zone == surface.zone && s.active && matches!(s.kind, SurfaceKind::Opaque { .. })
-        })
+        .filter(|s| s.zone == surface.zone && s.active)
         .map(|s| s.area * s.thermal_absorptance_int.max(0.05))
         .sum();
     if weight <= 0.0 {
@@ -929,11 +964,13 @@ fn interior_solar(model: &Model, sun: &SunVector, wx: &WeatherHour) -> (Vec<f64>
     for zone in 0..model.zones.len() {
         let mut beam_w = 0.0;
         let mut diffuse_w = 0.0;
-        let mut inward_w = 0.0;
-        for surface in model.surfaces.iter().filter(|s| s.zone == zone && s.active) {
+        for (si, surface) in model.surfaces.iter().enumerate() {
+            if surface.zone != zone || !surface.active {
+                continue;
+            }
             let SurfaceKind::Window {
                 transmittance,
-                inward_absorptance,
+                solar_absorptance,
                 ..
             } = surface.kind
             else {
@@ -946,7 +983,7 @@ fn interior_solar(model: &Model, sun: &SunVector, wx: &WeatherHour) -> (Vec<f64>
                 incident_parts(sun, surface.normal, wx.direct_normal, wx.diffuse_horizontal);
             beam_w += transmittance * beam * surface.area;
             diffuse_w += transmittance * diffuse * surface.area;
-            inward_w += inward_absorptance * (beam + diffuse) * surface.area;
+            surface_watts[si] += solar_absorptance * (beam + diffuse) * surface.area;
         }
         let mut receivers = Vec::new();
         let mut index = Vec::new();
@@ -969,7 +1006,7 @@ fn interior_solar(model: &Model, sun: &SunVector, wx: &WeatherHour) -> (Vec<f64>
         for (local, si) in index.into_iter().enumerate() {
             surface_watts[si] += absorbed[local];
         }
-        zone_watts[zone] += inward_w + (beam_w + diffuse_w - absorbed_sum).max(0.0);
+        zone_watts[zone] += (beam_w + diffuse_w - absorbed_sum).max(0.0);
     }
     (surface_watts, zone_watts)
 }
@@ -1011,7 +1048,10 @@ fn enclosure_longwave(model: &Model, interior: &[f64]) -> Vec<f64> {
             if surface.zone != zone || !surface.active {
                 continue;
             }
-            if !matches!(surface.kind, SurfaceKind::Opaque { .. }) {
+            if !matches!(
+                surface.kind,
+                SurfaceKind::Opaque { .. } | SurfaceKind::Window { .. }
+            ) {
                 continue;
             }
             let tilt = tilt_from_normal(surface.normal[2]);
