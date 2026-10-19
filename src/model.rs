@@ -208,9 +208,13 @@ pub enum SurfaceKind {
     },
     Window {
         u_factor: f64,
+        shgc: f64,
+        /// Normal-incidence solar transmittance.
         transmittance: f64,
-        /// Layer solar absorptance. Half is applied to each glass face.
+        /// Normal-incidence layer solar absorptance. Half is applied to each glass face.
         solar_absorptance: f64,
+        /// Normal-incidence solar reflectance.
+        reflectance: f64,
         /// Glazing resistance after the standard films are removed, m²K/W.
         resistance: f64,
     },
@@ -929,8 +933,10 @@ fn construction_kind(
         return Ok((
             SurfaceKind::Window {
                 u_factor,
+                shgc: glass.shgc,
                 transmittance: optics.transmittance,
                 solar_absorptance: optics.solar_absorptance,
+                reflectance: optics.reflectance,
                 resistance: optics.resistance,
             },
             0.0,
