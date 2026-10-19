@@ -1,0 +1,292 @@
+{
+  "Version": {
+    "Version 1": { "version_identifier": "25.1" }
+  },
+  "SimulationControl": {
+    "SimulationControl 1": {
+      "do_zone_sizing_calculation": "No",
+      "do_system_sizing_calculation": "No",
+      "do_plant_sizing_calculation": "No",
+      "run_simulation_for_sizing_periods": "No",
+      "run_simulation_for_weather_file_run_periods": "Yes"
+    }
+  },
+  "Building": {
+    "Box": { "north_axis": 0 }
+  },
+  "Timestep": {
+    "Timestep 1": { "number_of_timesteps_per_hour": 6 }
+  },
+  "Site:Location": {
+    "Chicago": {
+      "latitude": 41.78,
+      "longitude": -87.75,
+      "time_zone": -6.0,
+      "elevation": 182
+    }
+  },
+  "RunPeriod": {
+    "January": {
+      "begin_month": 1,
+      "begin_day_of_month": 1,
+      "begin_year": 2021,
+      "end_month": 1,
+      "end_day_of_month": 3,
+      "end_year": 2021
+    }
+  },
+  "GlobalGeometryRules": {
+    "GlobalGeometryRules 1": {
+      "starting_vertex_position": "UpperLeftCorner",
+      "vertex_entry_direction": "Counterclockwise",
+      "coordinate_system": "World"
+    }
+  },
+  "Schedule:Constant": {
+    "Always On": { "schedule_type_limits_name": "Fraction", "hourly_value": 1.0 },
+    "Heat Setpoint": { "schedule_type_limits_name": "Temperature", "hourly_value": 21.0 },
+    "Cool Setpoint": { "schedule_type_limits_name": "Temperature", "hourly_value": 24.0 }
+  },
+  "Schedule:Compact": {
+    "Occupancy": {
+      "schedule_type_limits_name": "Fraction",
+      "data": [
+        { "field": "Through: 12/31" },
+        { "field": "For: AllDays" },
+        { "field": "Until: 24:00" },
+        { "field": 1.0 }
+      ]
+    }
+  },
+  "Material": {
+    "Insulation": {
+      "roughness": "Rough",
+      "thickness": 0.1,
+      "conductivity": 0.04,
+      "density": 40,
+      "specific_heat": 1200,
+      "thermal_absorptance": 0.9,
+      "solar_absorptance": 0.6,
+      "visible_absorptance": 0.6
+    },
+    "Concrete": {
+      "roughness": "MediumRough",
+      "thickness": 0.15,
+      "conductivity": 1.4,
+      "density": 2200,
+      "specific_heat": 900,
+      "thermal_absorptance": 0.9,
+      "solar_absorptance": 0.7,
+      "visible_absorptance": 0.7
+    }
+  },
+  "WindowMaterial:SimpleGlazingSystem": {
+    "DoubleClear": {
+      "u_factor": 2.2,
+      "solar_heat_gain_coefficient": 0.4,
+      "visible_transmittance": 0.6
+    }
+  },
+  "Construction": {
+    "WallRoof": { "outside_layer": "Insulation" },
+    "Slab": { "outside_layer": "Concrete" },
+    "Window": { "outside_layer": "DoubleClear" }
+  },
+  "Zone": {
+    "Living": {
+      "direction_of_relative_north": 0,
+      "x_origin": 0,
+      "y_origin": 0,
+      "z_origin": 0,
+      "type": 1,
+      "multiplier": 1,
+      "ceiling_height": 2.7,
+      "volume": 135,
+      "floor_area": 50
+    }
+  },
+  "BuildingSurface:Detailed": {
+    "Floor": {
+      "surface_type": "Floor",
+      "construction_name": "Slab",
+      "zone_name": "Living",
+      "outside_boundary_condition": "Ground",
+      "sun_exposure": "NoSun",
+      "wind_exposure": "NoWind",
+      "view_factor_to_ground": 0,
+      "vertices": [
+        { "vertex_x_coordinate": 5, "vertex_y_coordinate": 5, "vertex_z_coordinate": 0 },
+        { "vertex_x_coordinate": 5, "vertex_y_coordinate": 0, "vertex_z_coordinate": 0 },
+        { "vertex_x_coordinate": 0, "vertex_y_coordinate": 0, "vertex_z_coordinate": 0 },
+        { "vertex_x_coordinate": 0, "vertex_y_coordinate": 5, "vertex_z_coordinate": 0 }
+      ]
+    },
+    "Roof": {
+      "surface_type": "Roof",
+      "construction_name": "WallRoof",
+      "zone_name": "Living",
+      "outside_boundary_condition": "Outdoors",
+      "sun_exposure": "SunExposed",
+      "wind_exposure": "WindExposed",
+      "view_factor_to_ground": 0,
+      "vertices": [
+        { "vertex_x_coordinate": 0, "vertex_y_coordinate": 0, "vertex_z_coordinate": 2.7 },
+        { "vertex_x_coordinate": 0, "vertex_y_coordinate": 5, "vertex_z_coordinate": 2.7 },
+        { "vertex_x_coordinate": 5, "vertex_y_coordinate": 5, "vertex_z_coordinate": 2.7 },
+        { "vertex_x_coordinate": 5, "vertex_y_coordinate": 0, "vertex_z_coordinate": 2.7 }
+      ]
+    },
+    "NorthWall": {
+      "surface_type": "Wall",
+      "construction_name": "WallRoof",
+      "zone_name": "Living",
+      "outside_boundary_condition": "Outdoors",
+      "sun_exposure": "SunExposed",
+      "wind_exposure": "WindExposed",
+      "view_factor_to_ground": 0.5,
+      "vertices": [
+        { "vertex_x_coordinate": 0, "vertex_y_coordinate": 5, "vertex_z_coordinate": 2.7 },
+        { "vertex_x_coordinate": 0, "vertex_y_coordinate": 5, "vertex_z_coordinate": 0 },
+        { "vertex_x_coordinate": 5, "vertex_y_coordinate": 5, "vertex_z_coordinate": 0 },
+        { "vertex_x_coordinate": 5, "vertex_y_coordinate": 5, "vertex_z_coordinate": 2.7 }
+      ]
+    },
+    "SouthWall": {
+      "surface_type": "Wall",
+      "construction_name": "WallRoof",
+      "zone_name": "Living",
+      "outside_boundary_condition": "Outdoors",
+      "sun_exposure": "SunExposed",
+      "wind_exposure": "WindExposed",
+      "view_factor_to_ground": 0.5,
+      "vertices": [
+        { "vertex_x_coordinate": 5, "vertex_y_coordinate": 0, "vertex_z_coordinate": 2.7 },
+        { "vertex_x_coordinate": 5, "vertex_y_coordinate": 0, "vertex_z_coordinate": 0 },
+        { "vertex_x_coordinate": 0, "vertex_y_coordinate": 0, "vertex_z_coordinate": 0 },
+        { "vertex_x_coordinate": 0, "vertex_y_coordinate": 0, "vertex_z_coordinate": 2.7 }
+      ]
+    },
+    "EastWall": {
+      "surface_type": "Wall",
+      "construction_name": "WallRoof",
+      "zone_name": "Living",
+      "outside_boundary_condition": "Outdoors",
+      "sun_exposure": "SunExposed",
+      "wind_exposure": "WindExposed",
+      "view_factor_to_ground": 0.5,
+      "vertices": [
+        { "vertex_x_coordinate": 5, "vertex_y_coordinate": 5, "vertex_z_coordinate": 2.7 },
+        { "vertex_x_coordinate": 5, "vertex_y_coordinate": 5, "vertex_z_coordinate": 0 },
+        { "vertex_x_coordinate": 5, "vertex_y_coordinate": 0, "vertex_z_coordinate": 0 },
+        { "vertex_x_coordinate": 5, "vertex_y_coordinate": 0, "vertex_z_coordinate": 2.7 }
+      ]
+    },
+    "WestWall": {
+      "surface_type": "Wall",
+      "construction_name": "WallRoof",
+      "zone_name": "Living",
+      "outside_boundary_condition": "Outdoors",
+      "sun_exposure": "SunExposed",
+      "wind_exposure": "WindExposed",
+      "view_factor_to_ground": 0.5,
+      "vertices": [
+        { "vertex_x_coordinate": 0, "vertex_y_coordinate": 0, "vertex_z_coordinate": 2.7 },
+        { "vertex_x_coordinate": 0, "vertex_y_coordinate": 0, "vertex_z_coordinate": 0 },
+        { "vertex_x_coordinate": 0, "vertex_y_coordinate": 5, "vertex_z_coordinate": 0 },
+        { "vertex_x_coordinate": 0, "vertex_y_coordinate": 5, "vertex_z_coordinate": 2.7 }
+      ]
+    }
+  },
+  "FenestrationSurface:Detailed": {
+    "SouthWindow": {
+      "surface_type": "Window",
+      "construction_name": "Window",
+      "building_surface_name": "SouthWall",
+      "view_factor_to_ground": 0.5,
+      "multiplier": 1,
+      "number_of_vertices": 4,
+      "extensions": [
+        { "vertex_x_coordinate": 3.5, "vertex_y_coordinate": 0, "vertex_z_coordinate": 2.2 },
+        { "vertex_x_coordinate": 3.5, "vertex_y_coordinate": 0, "vertex_z_coordinate": 0.8 },
+        { "vertex_x_coordinate": 1.5, "vertex_y_coordinate": 0, "vertex_z_coordinate": 0.8 },
+        { "vertex_x_coordinate": 1.5, "vertex_y_coordinate": 0, "vertex_z_coordinate": 2.2 }
+      ]
+    }
+  },
+  "People": {
+    "Residents": {
+      "zone_or_zonelist_or_space_or_spacelist_name": "Living",
+      "number_of_people_schedule_name": "Occupancy",
+      "number_of_people_calculation_method": "People",
+      "number_of_people": 2,
+      "fraction_radiant": 0.3,
+      "sensible_heat_fraction": 0.6
+    }
+  },
+  "Lights": {
+    "Lights": {
+      "zone_or_zonelist_or_space_or_spacelist_name": "Living",
+      "schedule_name": "Always On",
+      "design_level_calculation_method": "LightingLevel",
+      "lighting_level": 200,
+      "return_air_fraction": 0,
+      "fraction_radiant": 0.4,
+      "fraction_visible": 0.2
+    }
+  },
+  "ZoneInfiltration:DesignFlowRate": {
+    "Infil": {
+      "zone_or_zonelist_or_space_or_spacelist_name": "Living",
+      "schedule_name": "Always On",
+      "design_flow_rate_calculation_method": "AirChanges/Hour",
+      "air_changes_per_hour": 0.4
+    }
+  },
+  "ZoneControl:Thermostat": {
+    "Living Thermostat": {
+      "zone_or_zonelist_name": "Living",
+      "control_type_schedule_name": "Always On",
+      "control_1_object_type": "ThermostatSetpoint:DualSetpoint",
+      "control_1_name": "Living Setpoints"
+    }
+  },
+  "ThermostatSetpoint:DualSetpoint": {
+    "Living Setpoints": {
+      "heating_setpoint_temperature_schedule_name": "Heat Setpoint",
+      "cooling_setpoint_temperature_schedule_name": "Cool Setpoint"
+    }
+  },
+  "ZoneHVAC:IdealLoadsAirSystem": {
+    "Living Ideal": {
+      "availability_schedule_name": "Always On",
+      "zone_supply_air_node_name": "Living Supply",
+      "maximum_heating_supply_air_temperature": 50,
+      "minimum_cooling_supply_air_temperature": 13,
+      "maximum_heating_supply_air_humidity_ratio": 0.015,
+      "minimum_cooling_supply_air_humidity_ratio": 0.008,
+      "heating_limit": "NoLimit"
+    }
+  },
+  "ZoneHVAC:EquipmentList": {
+    "Living Equipment": {
+      "load_distribution_scheme": "SequentialLoad",
+      "equipment": [
+        {
+          "zone_equipment_object_type": "ZoneHVAC:IdealLoadsAirSystem",
+          "zone_equipment_name": "Living Ideal",
+          "zone_equipment_cooling_sequence": 1,
+          "zone_equipment_heating_or_no_load_sequence": 1
+        }
+      ]
+    }
+  },
+  "ZoneHVAC:EquipmentConnections": {
+    "Living Connections": {
+      "zone_name": "Living",
+      "zone_conditioning_equipment_list_name": "Living Equipment",
+      "zone_air_inlet_node_or_nodelist_name": "Living Inlets",
+      "zone_air_node_name": "Living Node",
+      "zone_return_air_node_or_nodelist_name": "Living Return"
+    }
+  }
+}
