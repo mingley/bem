@@ -30,7 +30,7 @@ cargo run --release -- run examples/box.epJSON examples/weather.epw --out result
 That command prints a short summary on stderr. With the default seven warmup days, the example currently reports:
 
 ```text
-heating 57.428 kWh
+heating 83.468 kWh
 cooling 0.000 kWh
 timesteps 432
 ```
@@ -112,7 +112,7 @@ Geometry may be in world coordinates. `BuildingSurface:Detailed` uses the curren
 Each zone timestep does four things:
 
 1. Place the sun and split solar onto windows and opaque surfaces.
-2. Update wall conduction and the inside and outside surface temperatures.
+2. Update opaque-wall conduction with conduction transfer functions, then the inside and outside surface temperatures.
 3. Solve the zone air temperature and humidity with the EnergyPlus third-order corrector.
 4. Meet the thermostat with zone equipment, in `SequentialLoad` order.
 
@@ -133,10 +133,10 @@ These pieces follow the EnergyPlus equations:
 - Long-wave exchange among opaque surfaces with Hottel’s Script F method
 - The simple-glazing window model. Transmitted beam is absorbed by the floor; the rest of the transmitted solar is spread by area and inside absorptance
 - The third-order zone air temperature and humidity updates
+- Opaque-wall conduction transfer functions from the state-space method, in one dimension and without an internal heat source
 
 These pieces are simpler stand-ins, so annual results will move as the port grows:
 
-- Opaque walls use a fully implicit finite-difference conduction model. The conduction-transfer-function generator is still ahead.
 - Solar is isotropic beam plus diffuse, with a ground reflectance of 0.2. There is no exterior shading.
 - Infiltration uses the design flow only. The wind and temperature coefficients are still ahead.
 - Windows are a single U-factor. They do not yet join the long-wave enclosure.
@@ -158,6 +158,7 @@ The tests check psychrometrics, sun position, convection coefficients, long-wave
 | `src/idf.rs` | IDF field reader |
 | `src/epjson.rs` | epJSON field reader |
 | `src/epw.rs` | EPW weather reader |
+| `src/ctf.rs` | Conduction transfer functions |
 | `src/simulate.rs` | Timestep, walls, zone air, and equipment |
 | `src/psychrometrics.rs` | Moist-air properties |
 | `src/solar.rs` | Sun position |

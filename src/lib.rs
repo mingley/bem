@@ -8,6 +8,7 @@
 
 pub mod baseboard;
 pub mod convection;
+pub mod ctf;
 pub mod epjson;
 pub mod epw;
 pub mod idf;
