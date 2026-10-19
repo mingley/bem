@@ -18,6 +18,7 @@ pub struct Model {
     pub schedules: Vec<Schedule>,
     pub zones: Vec<Zone>,
     pub surfaces: Vec<Surface>,
+    pub overhangs: Vec<crate::shading::Overhang>,
     pub outputs: Vec<OutputVariable>,
     pub warnings: Vec<String>,
 }
@@ -238,6 +239,8 @@ pub struct Surface {
     pub thermal_absorptance_ext: f64,
     pub thermal_absorptance_int: f64,
     pub active: bool,
+    /// World-coordinate polygon, outward normal from the right-hand rule.
+    pub vertices: Vec<[f64; 3]>,
 }
 
 impl Schedule {
@@ -326,6 +329,7 @@ fn interpret(objects: &[IdfObject]) -> Result<Model, String> {
     let mut baseboards: Vec<BaseboardDraft> = Vec::new();
     let mut equipment_lists: Vec<EquipList> = Vec::new();
     let mut connections: Vec<EquipConn> = Vec::new();
+    let mut overhang_drafts: Vec<OverhangDraft> = Vec::new();
 
     for object in objects {
         if object.is_type("Building") {
@@ -444,6 +448,15 @@ fn interpret(objects: &[IdfObject]) -> Result<Model, String> {
                 zone: object.field(0).to_string(),
                 list: object.field(1).to_string(),
             });
+        } else if object.is_type("Shading:Overhang") {
+            overhang_drafts.push(OverhangDraft {
+                window: object.field(1).to_string(),
+                height: parse_f64(object.field(2)).unwrap_or(0.0),
+                tilt: parse_f64(object.field(3)).unwrap_or(90.0),
+                left: parse_f64(object.field(4)).unwrap_or(0.0),
+                right: parse_f64(object.field(5)).unwrap_or(0.0),
+                depth: parse_f64(object.field(6)).unwrap_or(0.0),
+            });
         } else if object.is_type("Output:Variable") {
             match parse_output_variable(object) {
                 Ok(request) => outputs.push(request),
@@ -529,6 +542,7 @@ fn interpret(objects: &[IdfObject]) -> Result<Model, String> {
             thermal_absorptance_ext: thermal_ext,
             thermal_absorptance_int: thermal_int,
             active: area > 1.0e-8,
+            vertices: world,
         });
         // Boundary is filled after every surface exists, so pairs can be matched.
         let _ = draft;
@@ -589,6 +603,7 @@ fn interpret(objects: &[IdfObject]) -> Result<Model, String> {
             thermal_absorptance_ext: thermal_ext,
             thermal_absorptance_int: thermal_int,
             active: area > 1.0e-8,
+            vertices: world,
         });
     }
 
@@ -806,10 +821,56 @@ fn interpret(objects: &[IdfObject]) -> Result<Model, String> {
         run_period,
         schedules,
         zones,
+        overhangs: build_overhangs(&overhang_drafts, &surfaces)?,
         surfaces,
         outputs,
         warnings,
     })
+}
+
+struct OverhangDraft {
+    window: String,
+    height: f64,
+    tilt: f64,
+    left: f64,
+    right: f64,
+    depth: f64,
+}
+
+fn build_overhangs(
+    drafts: &[OverhangDraft],
+    surfaces: &[Surface],
+) -> Result<Vec<crate::shading::Overhang>, String> {
+    let mut overhangs = Vec::new();
+    for draft in drafts {
+        if draft.depth <= 0.0 {
+            return Err(format!(
+                "Shading:Overhang on '{}' needs a positive depth",
+                draft.window
+            ));
+        }
+        let window = surfaces
+            .iter()
+            .position(|surface| surface.name.eq_ignore_ascii_case(&draft.window))
+            .ok_or_else(|| format!("overhang window '{}' was not found", draft.window))?;
+        let vertices = crate::shading::overhang_rectangle(
+            &surfaces[window].vertices,
+            surfaces[window].normal,
+            draft.height,
+            draft.tilt,
+            draft.left,
+            draft.right,
+            draft.depth,
+        );
+        if vertices.len() < 4 {
+            return Err(format!(
+                "overhang window '{}' has no polygon to shade",
+                draft.window
+            ));
+        }
+        overhangs.push(crate::shading::Overhang { window, vertices });
+    }
+    Ok(overhangs)
 }
 
 fn boundary_of(
