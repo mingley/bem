@@ -16,6 +16,7 @@ pub mod model;
 pub mod psychrometrics;
 pub mod radiosity;
 pub mod report;
+pub mod shading;
 pub mod simple_glazing;
 pub mod simulate;
 pub mod solar;
